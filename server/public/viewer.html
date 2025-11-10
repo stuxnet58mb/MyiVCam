@@ -1,0 +1,79 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>MyiVCam Viewer</title>
+<style>
+body { font-family: Arial; background:#111; color:#eee; }
+#videoContainer { max-width: 640px; margin: 20px auto; }
+video, img { width:100%; background:#000; }
+.status { margin:10px 0; }
+</style>
+</head>
+<body>
+<h1>Viewer</h1>
+<div class="status" id="status">Connecting...</div>
+<div id="videoContainer">
+  <video id="webrtcVideo" autoplay playsinline></video>
+  <img id="mjpegImage" style="display:none;" />
+</div>
+<div>
+  Mode:
+  <select id="modeSelect">
+    <option value="webrtc">WebRTC</option>
+    <option value="mjpeg">MJPEG</option>
+  </select>
+</div>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+const statusEl = document.getElementById('status');
+const videoEl = document.getElementById('webrtcVideo');
+const mjpegImg = document.getElementById('mjpegImage');
+const modeSelect = document.getElementById('modeSelect');
+let pc = null;
+
+function setupWebRTC() {
+  pc = new RTCPeerConnection();
+  pc.ontrack = ev => { videoEl.srcObject = ev.streams[0]; };
+  pc.onicecandidate = ev => {
+    if (ev.candidate) socket.emit('webrtc-ice', {
+      candidate: ev.candidate.candidate,
+      sdpMLineIndex: ev.candidate.sdpMLineIndex,
+      sdpMid: ev.candidate.sdpMid
+    });
+  };
+}
+socket.on('connect', () => { statusEl.textContent = 'Socket connected.'; });
+socket.on('webrtc-offer', async data => {
+  if (modeSelect.value !== 'webrtc') return;
+  setupWebRTC();
+  await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp });
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  socket.emit('webrtc-answer', { sdp: answer.sdp });
+  statusEl.textContent = 'Answer sent.';
+});
+socket.on('webrtc-ice', async data => {
+  if (!pc) return;
+  try {
+    await pc.addIceCandidate({ candidate: data.candidate, sdpMLineIndex: data.sdpMLineIndex, sdpMid: data.sdpMid });
+  } catch(e) { console.error(e); }
+});
+socket.on('mjpeg-frame', data => {
+  if (modeSelect.value !== 'mjpeg') return;
+  mjpegImg.style.display = 'block';
+  videoEl.style.display = 'none';
+  mjpegImg.src = 'data:image/jpeg;base64,' + data.image;
+});
+modeSelect.addEventListener('change', () => {
+  if (modeSelect.value === 'webrtc') {
+    mjpegImg.style.display = 'none'; videoEl.style.display = 'block';
+    statusEl.textContent = 'WebRTC mode.';
+  } else {
+    statusEl.textContent = 'MJPEG mode.';
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,56 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Sender Debug</title>
+<style>
+body { font-family: Arial; background:#222; color:#eee; }
+video { width:320px; background:#000; }
+</style>
+</head>
+<body>
+<h1>Sender (Browser Simulation)</h1>
+<div id="status">Initializing...</div>
+<video id="localVideo" autoplay playsinline muted></video>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+const statusEl = document.getElementById('status');
+const localVideo = document.getElementById('localVideo');
+let pc = new RTCPeerConnection();
+
+navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
+  localVideo.srcObject = stream;
+  stream.getTracks().forEach(t => pc.addTrack(t, stream));
+});
+
+pc.onicecandidate = ev => {
+  if (ev.candidate) {
+    socket.emit('webrtc-ice', {
+      candidate: ev.candidate.candidate,
+      sdpMLineIndex: ev.candidate.sdpMLineIndex,
+      sdpMid: ev.candidate.sdpMid
+    });
+  }
+};
+
+socket.on('connect', () => { statusEl.textContent = 'Socket connected.'; createOffer(); });
+socket.on('webrtc-answer', async data => {
+  await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp });
+  statusEl.textContent = 'Answer set.';
+});
+socket.on('webrtc-ice', async data => {
+  try {
+    await pc.addIceCandidate({ candidate: data.candidate, sdpMLineIndex: data.sdpMLineIndex, sdpMid: data.sdpMid });
+  } catch(e) { console.error(e); }
+});
+
+async function createOffer() {
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  socket.emit('webrtc-offer', { sdp: offer.sdp });
+  statusEl.textContent = 'Offer sent.';
+}
+</script>
+</body>
+</html>

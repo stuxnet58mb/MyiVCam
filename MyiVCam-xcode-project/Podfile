@@ -1,0 +1,11 @@
+platform :ios, '15.0'
+use_frameworks!
+
+target 'MyiVCam' do
+  # WebRTC officiel
+  pod 'GoogleWebRTC'
+  # Socket.IO client Swift (signalisation)
+  pod 'Socket.IO-Client-Swift', '~> 16.0'
+  # RTMP fallback (optionnel)
+  pod 'HaishinKit', '~> 1.6.4'
+end

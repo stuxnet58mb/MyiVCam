@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<title>iPhone Sender (WebRTC)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  body { font-family: Segoe UI, Arial, sans-serif; background: #111; color: #eee; margin: 0; padding: 16px; }
+  .wrap { max-width: 700px; margin: 0 auto; }
+  video { width: 100%; max-height: 60vh; background: #000; border-radius: 8px; }
+  .row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  input, button, select { padding: 10px; border-radius: 6px; border: 1px solid #333; background: #1b1b1b; color: #eee; }
+  button { cursor: pointer; }
+  .ok { color: #6bd66b; }
+  .err { color: #ff6b6b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h2>iPhone Sender</h2>
+  <p id="status">Prêt. Donne l’accès caméra/micro quand demandé.</p>
+
+  <video id="local" autoplay playsinline muted></video>
+
+  <div class="row">
+    <label>Caméra:
+      <select id="cameraSelect"></select>
+    </label>
+    <label>Résolution:
+      <select id="resSelect">
+        <option value="1280x720">1280x720</option>
+        <option value="1920x1080">1920x1080</option>
+        <option value="640x480">640x480</option>
+      </select>
+    </label>
+    <label>FPS:
+      <select id="fpsSelect">
+        <option>30</option>
+        <option>24</option>
+        <option>60</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="row">
+    <button id="startBtn">Démarrer</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <button id="switchBtn">Basculer cam avant/arrière</button>
+    <label><input type="checkbox" id="muteMic"> Couper micro</label>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+let pc, stream;
+let currentFacing = 'environment';
+let socket;
+
+const statusEl = document.getElementById('status');
+const localVideo = document.getElementById('local');
+const cameraSelect = document.getElementById('cameraSelect');
+const resSelect = document.getElementById('resSelect');
+const fpsSelect = document.getElementById('fpsSelect');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const switchBtn = document.getElementById('switchBtn');
+const muteMic = document.getElementById('muteMic');
+
+function logOk(msg){ statusEl.innerHTML = '<span class="ok">✓</span> ' + msg; }
+function logErr(msg){ statusEl.innerHTML = '<span class="err">✗</span> ' + msg; }
+
+async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cams = devices.filter(d => d.kind === 'videoinput');
+  cameraSelect.innerHTML = '';
+  cams.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d.deviceId;
+    opt.textContent = d.label || 'Caméra';
+    cameraSelect.appendChild(opt);
+  });
+}
+
+function parseRes(val) {
+  const [w, h] = val.split('x').map(Number);
+  return { width: w, height: h };
+}
+
+async function getStream() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+
+  const { width, height } = parseRes(resSelect.value);
+  const fps = Number(fpsSelect.value);
+  const constraints = {
+    audio: true,
+    video: cameraSelect.value ? { deviceId: { exact: cameraSelect.value }, width: { ideal: width }, height: { ideal: height }, frameRate: { ideal: fps } }
+                              : { facingMode: { ideal: currentFacing }, width: { ideal: width }, height: { ideal: height }, frameRate: { ideal: fps } }
+  };
+  stream = await navigator.mediaDevices.getUserMedia(constraints);
+  localVideo.srcObject = stream;
+  logOk('Capture démarrée: ' + width + 'x' + height + ' @ ' + fps + 'fps');
+}
+
+function setupSocket() {
+  socket = io();
+  socket.on('connect', () => logOk('Socket connectée'));
+  socket.on('webrtc-answer', async data => {
+    if (!pc) return;
+    await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp });
+    logOk('Answer reçue, connexion en cours...');
+  });
+  socket.on('webrtc-ice', async data => {
+    try {
+      await pc.addIceCandidate({ candidate: data.candidate, sdpMLineIndex: data.sdpMLineIndex, sdpMid: data.sdpMid });
+    } catch(e) { console.error(e); }
+  });
+}
+
+function setupPeer() {
+  pc = new RTCPeerConnection();
+  pc.onicecandidate = ev => {
+    if (ev.candidate) {
+      socket.emit('webrtc-ice', {
+        candidate: ev.candidate.candidate,
+        sdpMLineIndex: ev.candidate.sdpMLineIndex,
+        sdpMid: ev.candidate.sdpMid
+      });
+    }
+  };
+  pc.oniceconnectionstatechange = () => {
+    if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      logOk('WebRTC connecté');
+    }
+  };
+}
+
+async function start() {
+  setupSocket();
+  setupPeer();
+  if (!stream) await getStream();
+  stream.getTracks().forEach(t => pc.addTrack(t, stream));
+  const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
+  await pc.setLocalDescription(offer);
+  socket.emit('webrtc-offer', { sdp: offer.sdp });
+
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+}
+
+function stop() {
+  if (pc) { pc.close(); pc = null; }
+  if (socket) { socket.disconnect(); socket = null; }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; localVideo.srcObject = null; }
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  logOk('Arrêté');
+}
+
+switchBtn.onclick = async () => {
+  currentFacing = currentFacing === 'environment' ? 'user' : 'environment';
+  await getStream();
+  if (pc) {
+    const videoSender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+    const newVideoTrack = stream.getVideoTracks()[0];
+    if (videoSender && newVideoTrack) await videoSender.replaceTrack(newVideoTrack);
+  }
+};
+
+muteMic.onchange = () => {
+  if (!stream) return;
+  stream.getAudioTracks().forEach(t => t.enabled = !muteMic.checked);
+};
+
+startBtn.onclick = start;
+stopBtn.onclick = stop;
+
+(async () => {
+  try {
+    await getStream();
+    await listCameras();
+  } catch (e) {
+    logErr('Permission caméra/micro requise: ' + e.message);
+  }
+})();
+</script>
+</body>
+</html>
