@@ -1,0 +1,66 @@
+name: Build unsigned IPA (AltStore-ready)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Install CocoaPods
+        run: |
+          sudo gem install cocoapods
+          cd MyiVCam-xcode-project
+          pod install
+
+      # Essai archive sans signature (peut échouer, on continue)
+      - name: Try archive without signing
+        continue-on-error: true
+        run: |
+          cd MyiVCam-xcode-project
+          xcodebuild -workspace MyiVCam.xcworkspace \
+            -scheme MyiVCam \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath $PWD/build/MyiVCam.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            archive | xcpretty
+
+      # Build simple + empaquetage IPA non signée
+      - name: Build (no signing) and package IPA
+        run: |
+          set -e
+          cd MyiVCam-xcode-project
+          xcodebuild -workspace MyiVCam.xcworkspace \
+            -scheme MyiVCam \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            -derivedDataPath build/DerivedData \
+            build | xcpretty
+
+          APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/MyiVCam.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "App not found at $APP_PATH"
+            exit 1
+          fi
+
+          mkdir -p unsigned/Payload
+          cp -R "$APP_PATH" unsigned/Payload/
+          cd unsigned
+          /usr/bin/zip -qry ../MyiVCam-unsigned.ipa Payload
+          cd ..
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyiVCam-unsigned-IPA
+          path: MyiVCam-xcode-project/MyiVCam-unsigned.ipa
